@@ -1,0 +1,312 @@
+---
+title: "R code for estimating the toxicokinetic parameters (*k*~u~ and *k*~e~)"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(deSolve) # for using the function "ode" to integrate
+library(FME) # for using the function "modFit" to fit 
+library(readxl) # for importing data from Excel files
+library(ggplot2) # for plotting
+library(dplyr) # for manipulating data frames
+```
+
+## 1. Cd isotope concentrations in exposure solution  
+
+The data on Cd isotope concentrations in exposure solution were imported from the Excel file provided as another Supporting Information document. The *.xlsx file name in the code below should be revised to be the same as the that of the Excel file.
+```{r message=FALSE, warning=FALSE}
+d_water <-
+  read_excel("SI_double isotope data.xlsx", sheet = 2) %>%
+  filter(species == "X. atratus") 
+
+```
+
+## 2. Cd isotope concentrations in mussels  
+
+Similarly, the data on the Cd isotope concentrations in the mussels during the double isotope exposure were imported from the same Excel file mentioned above but from a different sheet.
+```{r message=FALSE, warning=FALSE}
+d_organism <- read_excel("SI_double isotope data.xlsx", sheet = 1) %>%
+  filter(species == "X. atratus")
+
+```
+
+## 3. Time points  
+
+In the doulbe Cd isotope exposure of *X. atratus*, the T1 and T2 were 48 h and 336 h, respectively.  
+```{r}
+T1 <- 48 # T1 = 10 h
+T2 <- 336 # T2 = 178
+```
+
+The total exposure length (i.e., T2 = 336) was divided into intervals of 1/48 d (i.e., 0.5 h). The time sequence was used below to interpolate the exposure concentration and calculate the bioaccumulation of Cd isotopes.
+```{r}
+times <- seq(from = 0,
+             to = T2 / 24,
+             by = 1 / 48)
+```
+
+
+## 4. Interpolation of Cd isotope concentrations in solutions  
+
+Cd isotope concentrations in the exposure solutions during the whole experiment period was interpolated from the measured concentrations using the function `approxfun`.
+```{r message=FALSE, warning=FALSE}
+Cw_Cd113 <- approxfun(x = d_water$day,
+                      y = d_water$Cw_Cd113_ppb,
+                      rule = 2)
+```
+
+
+The interpolated concentrations of ^113^Cd are shown below:  
+
+```{r message=FALSE, warning=FALSE}
+
+data.frame(Day = times, Cd113 = Cw_Cd113(times)) %>%
+  ggplot(aes(Day, Cd113)) +
+  theme_classic() +
+  geom_line(color = "red2") +
+  labs(x = "Days",
+       y = ~ "Concentration of " * "" ^ "113" * "Cd (" * mu * g ~ "L" ^
+         "-1" * ")")
+```
+
+The interpolated concentrations of ^114^Cd are shown below:  
+
+```{r message=FALSE, warning=FALSE}
+Cw_Cd114 <- approxfun(x = d_water$day,
+                      y = d_water$Cw_Cd114_ppb,
+                      rule = 2)
+
+data.frame(Day = times, Cd114 = Cw_Cd114(times)) %>%
+  ggplot(aes(Day, Cd114)) +
+  theme_classic() +
+  geom_line(color = "red2") +
+  scale_y_continuous(limits = c(0, NA)) +
+  labs(x = "Days",
+       y = ~ "Concentration of " * "" ^ "114" * "Cd (" * mu * g ~ "L" ^
+         "-1" * ")")
+```
+
+
+## 5. Toxicokinetic (TK) model  
+
+The toxicokinetic model is defined below. The variation of the mass of a Cd isotope in a mussel is the balance between uptake ($k_\text{in}C_\text{w}$) and elimination ($k_\text{e}M_\text{int}$) of the isotope. See equations 1-2 in the main text for detailed descriptions of the model.  
+
+```{r message=FALSE, warning=FALSE}
+TK <- function (t, y, parameters) {
+  kin <- parameters[1]
+  ke <- parameters[2]
+  Mint_Cd113 <- y[1]
+  Mint_Cd114 <- y[2]
+  dMint_Cd113 <- kin * Cw_Cd113(t) - ke * Mint_Cd113
+  dMint_Cd114 <- kin * Cw_Cd114(t) - ke * Mint_Cd114
+  
+  list(c(dMint_Cd113, dMint_Cd114))
+}
+```
+
+## 6. Estimation of the initial parameter values  
+
+The initial value of *k*~e~, over which the parameter value was optimized,  was estimated based on the decrease of ^113^Cd in mussels during the period between T1 and T2.  See Eq. 7 for more detailed description.
+
+An overall rate of Cd elimination from the mussels can be estimated based on the decrease of 113Cd in mussels during the period between T1 and T2 (see the figure below):
+
+$$ k_\text{e} = -\frac{\text{∆ln⁡(median of new }{}^{113} \text{Cd)}}{∆t}$$
+
+where the numerator is the decrease of the median natural-log transformed ^113^Cd content, and the denominator *Δt* is the duration of the second stage (i.e., T2 – T1). 
+    The overall *k*~e~ was used as the initial value to estimate *k*~e~ of individual mussels.     
+
+
+
+```{r message=F}
+ggplot(d_organism, aes(day, Cd113_new_ng)) +
+  theme_classic() +
+  geom_jitter(width = 0.1, height = 0, shape = 1) +
+  stat_summary(geom = "point", fun = "median", color = "red") +
+  stat_summary(geom = "line", fun = "median", color = "red") +
+  labs(
+    x = "Days",
+     y = ~ "Content of " * "" ^ "113" * "Cd in soft tissue (ng)"
+  )
+
+```
+
+
+```{r message=F}
+d_organism_median <- d_organism %>%
+  group_by(day) %>%
+  summarise(median_Cd113 = median(Cd113_new_ng))
+
+ke_initial <- with(d_organism_median,
+                   (log(median_Cd113[2]) - log(median_Cd113[3])) / (day[3] -
+                                                                  day[2]))
+ke_initial 
+
+```
+
+
+
+
+## 7. Objective function for fitting toxicokinetic parameters  
+
+The objective function returns a vector of the weighted residuals, which are the difference between the modeled amount of Cd isotopes and the measured amount of Cd isotopes. The reciprocal of the measured amount of Cd isotopes are used as the weight.  
+
+```{r message=FALSE, warning=FALSE}
+fn_resid <- function(parameters_to_fit) {
+  kin <- parameters_to_fit[1]
+  ke <- parameters_to_fit[2]
+  out.Mint <- ode(
+    func = TK,
+    times = times,
+    y = c(Mint_Cd113 = 0, Mint_Cd114 = 0),
+    parms = parameters_to_fit
+  )
+  n <- length(times)
+# residuals = (modeled – measured)/ measured
+  resid.Mint <- c((out.Mint[n, 2] / organism_i$Cd113_new_ng - 1),
+                  (out.Mint[n, 3] / organism_i$Cd114_new_ng - 1))
+    return(resid.Mint)
+}
+
+
+```
+
+## 8. Fitting *k*~in~ and *k*~e~ 
+
+Cd isotope contents measured at time T2 are used for estimating *k*~in~ and *k*~e~.
+```{r message=FALSE}
+# selecting data of time T2
+organism_T2 <- subset(d_organism, hour == T2) 
+```
+
+
+```{r message=FALSE}
+# the number of organisms analyzed at T2
+n_organism <- dim(organism_T2)[1] 
+
+# empty vectors for storing kin and ke values
+kin <- numeric(n_organism)
+ke  <- numeric(n_organism)
+
+# create a folder to store figures for checking the goodness of fitting.
+fit_SN <- gsub("[: -]", "" , Sys.time())
+path <- paste0("fit_check_", fit_SN)
+dir.create(path)
+```
+
+Fitting the values of *k*~in~ and *k*~e~ for each individual. This step may take 5 to 10 min to finish.
+```{r message=FALSE}
+
+for (i in 1:n_organism) {
+  # select data for the ith individual
+  organism_i <- organism_T2[i, ]
+  # intial estimation of kin: content of 114Cd/exposure time/exposure concentration  
+  kin_initial <-
+    organism_i$Cd114_new_ng / (T2 / 24) / mean(d_water$Cw_Cd114_ppb)
+
+print(system.time(
+  # using the optimization function `modFit` to estimate the values of kin and ke
+  fit.TK <- modFit(
+    # objective function defined above
+    f = fn_resid,
+    # initial parameter values estimated above
+    p = c(kin_initial, ke_initial),
+    # the quasi-Newton method
+    method = "BFGS",
+    # the lower and upper bound of kin and ke
+    lower = c(kin_initial * 0.1, ke_initial * 0.1),
+    upper = c(kin_initial * 10, ke_initial * 10)
+  )
+))
+
+# extract parameter values and store them into the corresponding vectors
+kin[i] <- fit.TK$par[1]
+ke[i]  <- fit.TK$par[2]
+
+# extract parameter values for the integration below
+kin_i <- fit.TK$par[1]
+ke_i  <- fit.TK$par[2]
+
+# integrate the TK model to calculate content of Cd isotopes at the end of exposure
+fit_i <- ode(
+  func = TK,
+  times = times,
+  y = c(Cint_113 = 0, Cint_114 = 0),
+  parms = c(kin_i, ke_i)
+)
+d_fit_i <- as.data.frame(fit_i)
+# plot the modeled content against the measured content to check the goodness of fitting  
+ggplot(d_fit_i, aes(x = time, Cint_113)) +
+  geom_line() +
+  geom_line(aes(x = time, y = Cint_114), color = "red2") +
+  geom_point(aes(x = organism_i$day, organism_i$Cd113_new_ng)) +
+  geom_point(aes(x = organism_i$day, organism_i$Cd114_new_ng), color =
+               "red2")
+
+ggsave(paste("fit", i, ".png"), path = path)
+
+}
+
+
+```
+
+
+## 9. Save *k*~u~，*k*~e~   
+
+The values of *k*~u~，*k*~e~ are saved as a *.csv file.  
+```{r message=FALSE, warning=FALSE}
+organism_T2$kin <- kin
+# ku is calculated from kin: ku = kin / weight of organism
+organism_T2$ku <- kin / 1000 / organism_T2$dw_g
+organism_T2$ke  <- ke
+# save the values as a csv file 
+write.csv(organism_T2, file=paste0("fitted parameters_", fit_SN, ".csv"))
+
+```
+
+## 10. Goodness of fit  
+
+The goodness of fit is visualized by plotting the modeled content vs. the measured content of ^113^Cd and ^114^Cd in each organism.  
+
+```{r message=FALSE, warning=FALSE}
+# empty vector to store modeled content of Cd isotopes  
+Cd113_fit <- numeric(n_organism)
+Cd114_fit <- numeric(n_organism)
+
+# Cd isotope content calculated by integrating the TK model  
+for (i in 1:n_organism){  
+  out.fit <- ode(func = TK, 
+                 times = times,
+                 y = c(Cint_Cd113 = 0, Cint_Cd114 = 0), 
+                 parms = c(kin = kin[i], ke = ke[i]))
+  N_step <- length(times)
+  Cd113_fit[i] <- out.fit[N_step, 2]
+  Cd114_fit[i] <- out.fit[N_step, 3]
+}
+
+organism_T2$Cd113_fit <- Cd113_fit
+organism_T2$Cd114_fit <- Cd114_fit
+
+# save the modeled Cd content as a csv file  
+write.csv(organism_T2, 
+          file=paste0("fit_Cd_T2_",fit_SN,".csv"))
+
+# plot the modeled contet vs. measured content
+ggplot(organism_T2, aes(Cd113_new_ng, Cd113_fit))+
+  theme_classic()+
+  geom_point(aes(color = "Cd-113"))+
+  geom_point(aes(Cd114_new_ng, Cd114_fit, color = "Cd-114"))+
+  geom_abline(slope = 1, intercept = 0)+
+  scale_x_log10()+
+  scale_y_log10()+
+  scale_color_manual(values = c("black", "red2")) +
+  labs(x = "Measured newly accumulated Cd (ng)",
+       y = "Modeled newly accumulated Cd (ng)",
+       color = NULL)
+
+```
